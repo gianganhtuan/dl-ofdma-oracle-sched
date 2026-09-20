@@ -894,5 +894,4 @@ work, cite the accompanying manuscript:
 }
 ```
 
-Replace this provisional entry with the final journal metadata after
-publication.
+TODO: To be replaced after publication.
