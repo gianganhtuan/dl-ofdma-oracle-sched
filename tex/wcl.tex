@@ -1,39 +1,56 @@
-\ifdefined\WCLreview
-  \documentclass[10pt,journal,onecolumn]{IEEEtran}
-\else
-  \documentclass[10pt,journal]{IEEEtran}
-\fi
-\usepackage{amsmath,amssymb}
+\documentclass[lettersize,journal]{IEEEtran}
+\usepackage{amsmath,amsfonts,amssymb}
 \usepackage{booktabs}
 \usepackage{graphicx}
 \usepackage{cite}
 \usepackage{url}
-\ifdefined\WCLreview
-  \usepackage{setspace}
-  \doublespacing
-\fi
-\input{generated/numbers.tex}
+\usepackage{algorithmic}
+\usepackage{array}
+\usepackage[caption=false,font=normalsize,labelfont=sf,textfont=sf]{subfig}
+\usepackage{textcomp}
+\usepackage{stfloats}
+\usepackage{url}
+\usepackage{verbatim}
+\usepackage{graphicx}
+\hyphenation{op-tical net-works semi-conduc-tor IEEE-Xplore}
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+\usepackage{balance}
+
+\begin{document}
+\input{numbers.tex}
 \newcommand{\cP}{\mathcal{P}}
 \newcommand{\cR}{\mathcal{R}}
 \newcommand{\cA}{\mathcal{A}}
 \newcommand{\ind}{\mathbf{1}}
 
-\title{Legal Resource-Unit Allocation by Oracle Imitation\protect\\
-for Wi-Fi 6 Downlink Scheduling}
-\author{Author Names and Affiliations to Be Supplied}
+\title{Queue-Aware OFDMA Scheduling via Oracle Imitation for IEEE 802.11ax WLANs}
+\author{
+    \IEEEauthorblockN{Anh Tuan GIANG* \qquad Nhat Quang DOAN* \qquad Hoang Ha NGUYEN* \qquad Anthony BUSSON**\\}
+    \IEEEauthorblockA{\textit{*University of Science and Technology of Hanoi},
+    \textit{Vietnam Academy of Science and Technology} \\
+    \textit{18 Hoang Quoc Viet, Nghia Do, Hanoi, Vietnam} \\
+    }
+    \IEEEauthorblockA{\textit{**Laboratoire de l’informatique du Parallelisme, UMR 5668 University Lyon 1 - ENS de Lyon - UCBL - CNRS - Inria, 46 Allee d’Italie, Lyon, France} \\
+    }
+}
 
-\begin{document}
 \maketitle
 \begin{abstract}
-Downlink OFDMA couples queue service with discrete resource-unit constraints.
-We formulate an instantaneous service-rate oracle over legal Wi-Fi 6 partitions
-and learn its actions from live access-point queues in ns-3.48. A compact set
-network and combinatorial decoder produce legal physical allocations. Across
-six controlled scenarios, the throughput policy remains within 0.02 Mbps of
-its oracle and improves saturated throughput from 63.99 to 92.12 Mbps against
-default round-robin. Host decision time averages 824.5 microseconds. Baseline
-capability differences, transient delay measurements, and age-weighted imitation
-failures delimit these results; hardware real-time operation remains unverified.
+Downlink OFDMA scheduling in the IEEE 802.11ax WLANs requires a fast decision over discrete,
+standard-compliant resource-unit (RU) layouts while accounting for the traffic
+actually queued at the access point (AP). We formulate an exact instantaneous
+service-rate oracle over legal 20~MHz RU partitions and imitate its decisions
+from live AP queue states in ns-3.48. A compact permutation-equivariant set
+network predicts per-station RU preferences, while a deterministic
+combinatorial decoder guarantees a legal physical allocation. Across six
+controlled scenarios, the learned throughput policy stays within 0.02~Mbps of
+its oracle and raises saturated throughput from 63.99 to 92.12~Mbps relative
+to the default round-robin scheduler. On a general-purpose Xeon host, neural
+inference averages 175.3~$\mu$s and the complete scheduling hook 824.5~$\mu$s,
+showing that optimization-quality decisions can be reproduced at microsecond
+scale without running the oracle online. The present evaluation focuses on a
+controlled single-BSS 20~MHz setting.
 \end{abstract}
 \begin{IEEEkeywords}
 IEEE 802.11ax, OFDMA, resource allocation, imitation learning, ns-3.
@@ -41,39 +58,65 @@ IEEE 802.11ax, OFDMA, resource allocation, imitation learning, ns-3.
 
 \section{Introduction}
 \IEEEPARstart{D}{ownlink} orthogonal frequency-division multiple access (OFDMA)
-lets a Wi-Fi 6 access point (AP) transmit to several stations (STAs) using
-different resource units (RUs). The scheduler must select recipients and place
-their RUs while accounting for buffered traffic, aggregation, and a common
-transmission duration. Large RUs can empty short queues quickly, whereas narrow
-RUs can increase concurrency but prolong a transmission. Legal RU layouts
-impose more structure than a sum-of-tones constraint.
+lets an IEEE 802.11ax access point (AP) serve several stations (STAs) in one
+transmission opportunity by assigning them different resource units (RUs).
+This additional frequency-domain freedom can improve throughput and latency,
+but only when RU sizes, selected users, queue contents, PHY rates, aggregation,
+and common PPDU duration are coordinated carefully. Analyses and simulations
+have shown that the gain of multi-user operation depends strongly on MAC/PHY
+overhead and traffic conditions \cite{bellalta2019ap,daldoul2020performance,
+avallone2021ofdma,magrin2023performance}. The resulting scheduler is therefore
+not a simple bandwidth split: large RUs can drain short queues rapidly, whereas
+small RUs increase concurrency, and the standard permits only specific physical
+RU partition patterns.
 
-Optimal and practical 802.11ax allocation algorithms already exist
-\cite{wang2020efficient,mmru2020}; ns-3-based studies show the importance of
-MAC overhead and queueing\cite{magrin2023performance}. Reinforcement learning
-has also been applied to joint user/resource decisions\cite{noh2024joint}.
-On commercial Wi-Fi 6 hardware, LOMAS demonstrates latency-driven downlink
-scheduling\cite{tai2025lomas}. These works motivate a narrower question:
-can an inexpensive learned decision preserve the service utility of a legal
-per-opportunity optimizer when both operate inside the same AP MAC?
+A substantial body of work consequently formulates 802.11ax RU allocation as
+an online optimization problem. Throughput-oriented algorithms jointly choose
+users and legal RU layouts \cite{wang2020efficient,mmru2020}; QoS-aware
+schedulers incorporate buffered traffic, priority, or fairness
+\cite{filoso2020qos,brahmi2023fair}; and channel-aware methods additionally
+exploit frequency-selective conditions and imperfect channel information
+\cite{tutelian2021frequency}. More recent work uses buffer-aware OFDMA to
+provide proportional resources to network slices \cite{marrone2025slicing}. Related work on mixed legacy/HE WLANs has further shown that the benefit of OFDMA depends on the interaction between OFDMA opportunity, AP contention, and fairness constraints, motivating population-aware parameter optimization \cite{GIANG2026112793}
+These approaches demonstrate the value of state-aware scheduling, but solving
+a combinatorial optimization problem at every opportunity can become costly
+when the action must also respect the exact RU structures exposed by the MAC.
 
-We study this question through supervised oracle imitation. During data
-collection, an exact finite-action optimizer labels the AP's live queue at
-each eligible scheduling opportunity. During evaluation, a set network emits
-per-STA RU scores and a deterministic decoder selects a legal physical
-allocation. The contribution is an explicit contract linking the oracle,
-training labels, and executed RU action, together with an evaluation of its
-network performance and computation cost. The oracle and decoder share the
-same partition representation; the actual frame exchange remains in ns-3.
-The learning architecture builds on established set processing
-\cite{zaheer2017deep}, and we do not claim a new general learning paradigm.
+Learning-based scheduling offers another route. Buffer-state features including
+packet sizes and ages have been used for deep reinforcement learning in
+downlink OFDMA \cite{bansbach2021buffer}; PPO has been applied to
+latency-constrained downlink Wi-Fi 6 scheduling \cite{he2023timesensitive}; and
+multi-agent or hierarchical reinforcement learning has been proposed for
+802.11ax uplink resource allocation \cite{han2024multiagent,noh2024joint}.
+Practical systems further show that dynamic OFDMA scheduling can run on real
+platforms: LOMAS implements latency-driven downlink scheduling on commercial
+Wi-Fi 6 hardware \cite{tai2025lomas}, while interference-aware scheduling has
+been demonstrated in real time on an openwifi software-defined-radio platform
+\cite{havinga2026cti}. These results establish the practicality of adaptive and
+learned scheduling, but leave a narrower question open: can a compact learned
+policy reproduce the utility of an exact legal-action optimizer from live AP
+queues, while preserving a direct contract between the optimization action,
+the learning label, and the RU allocation actually executed by the MAC?
 
-The primary result concerns the throughput-trained policy. An age-weighted
-variant tests the dependence on the label objective and exposes failures of
-generalization. We retain these failures and evaluate delay only with its
-finite-window interpretation. The study covers one controlled 20~MHz BSS;
-it makes no claim of optimal long-run scheduling or device-level real-time
-operation.
+We answer this question through supervised oracle imitation. During data
+collection, an exact finite-action optimizer labels each eligible live AP queue
+state. At run time, a permutation-equivariant set network, following the set
+processing principle of \cite{zaheer2017deep}, emits per-STA RU scores and a
+deterministic combinatorial decoder projects them directly onto the same legal
+physical action space used by the oracle. The actual frame exchange, sequence
+assignment, aggregation, contention, acknowledgments, and retries remain inside
+ns-3 rather than being replaced by a learned service model. This design makes
+legality explicit by construction and moves the expensive PHY-aware oracle
+search offline.
+
+Across six controlled scenarios, the throughput-trained learned policy tracks
+its oracle to within 0.02~Mbps and reaches 92.12~Mbps under saturation versus
+63.99~Mbps for default round-robin. We also measure the complete host decision
+path rather than neural inference alone: inference averages 175.3~$\mu$s and
+the full scheduling hook 824.5~$\mu$s. An age-weighted variant is retained to
+show objective-dependent generalization failures. The evaluation is intentionally
+focused on a single 20~MHz BSS and does not claim long-run optimality across
+arbitrary channels or traffic.
 
 \section{Native Queue-State Oracle}
 \label{sec:oracle}
@@ -237,7 +280,7 @@ No result here relies on substituting predicted service for received traffic.
 
 \section{Native ns-3 Evaluation}
 \subsection{Protocol and Baselines}
-\input{generated/scenarios.tex}
+\input{scenarios.tex}
 The network has a single AP, stationary STAs on a 2~m circle, 5~GHz
 20~MHz HE operation, 800~ns guard interval, one spatial stream, and a common
 fixed MCS per run. We use \texttt{SpectrumWifiPhy}, log-distance path loss,
@@ -267,10 +310,10 @@ intervals use Student's $t$ with nine degrees of freedom; the six-scenario
 analysis is exploratory without multiplicity correction.
 
 \subsection{Throughput and Objective Dependence}
-\input{generated/throughput.tex}
+\input{throughput.tex}
 \begin{figure}[t]
  \centering
- \includegraphics[width=\columnwidth]{generated/gains.pdf}
+ \includegraphics[width=\columnwidth]{gains.pdf}
  \caption{L-T gains in the four overloaded cases; bars are paired 95\%
  confidence intervals over ten runs. Baseline capabilities differ as stated
  in Section~IV-A.}
@@ -311,7 +354,7 @@ delay tradeoff. Both training objectives and all underlying runs are included
 in the artifact.
 
 \subsection{Interpreting Packet Delay}
-\input{generated/delay.tex}
+\input{delay.tex}
 Table~\ref{tab:delay} shows lower received-packet mean delay for L-T in the
 four overloaded cases, but these are transient measurements. At saturation,
 offered load is 144~Mbps and L-T serves about 64\% of that rate. Neither
@@ -330,10 +373,10 @@ a general latency claim. In particular, adding age to~\eqref{eq:weight}
 has not solved average-delay optimization.
 
 \subsection{Computation Cost}
-\input{generated/timing.tex}
+\input{timing.tex}
 \begin{figure}[t]
  \centering
- \includegraphics[width=\columnwidth]{generated/latency.pdf}
+ \includegraphics[width=\columnwidth]{latency.pdf}
  \caption{Serial L-T host cost by scenario. Stacks show mean component
  times; black ticks show means of run-level decision p99s. The dashed line
  is the chosen 1.5~ms budget. Minor hook bookkeeping is outside the stacks.}
@@ -361,12 +404,27 @@ from the MAC protocol nor a worst-case guarantee. Empty-action fallback
 averages \FallbackMean{} occurrences per run, including initial setup;
 fallbacks are distinct from deadline misses.
 
-Computation time is not charged to ns-3 simulated time. Consequently,
-these measurements establish host software cost, while network results
-assume scheduling decisions are available immediately. A deployment claim
-requires a justified decision deadline, evaluation with computation delay
-and stale state, and measurements on the intended AP processor. The
-exponential STA-mask decoder also limits extrapolation beyond nine STAs.
+The timing results are already encouraging for real-time use. The neural
+forward pass averages only \InferenceMean{}~$\mu$s on a general-purpose Xeon,
+so model inference itself is firmly in the microsecond regime; even the complete
+selection hook averages \DecisionMean{}~$\mu$s. Modern AP processors with SIMD
+support or dedicated neural accelerators, analogous to Jetson-class embedded
+AI hardware, can plausibly reduce the forward-pass cost further. In the current
+implementation, however, projection costs 483.0~$\mu$s on average and therefore
+dominates inference at nine STAs. Optimizing this legal decoder, caching common
+partition decisions, or implementing it with more parallel hardware is thus at
+least as important as accelerating the neural network. Together, these numbers
+indicate substantial headroom for practical real-time integration rather than
+a computation bottleneck intrinsic to oracle imitation.
+
+Computation time is nevertheless not charged to ns-3 simulated time, and the
+1.5~ms line is an illustrative engineering budget rather than a deadline derived
+from the 802.11ax MAC. Consequently, the present measurements establish
+microsecond-scale host software cost and make real-time deployment plausible,
+but do not by themselves constitute a device-level deadline guarantee. A final
+deployment study should inject computation delay and stale state into the loop
+and measure the implementation on the target AP SoC. The exponential STA-mask
+decoder also limits direct extrapolation beyond nine STAs.
 
 \section{Conclusion}
 An oracle and learned decoder sharing legal physical RU actions provide a
@@ -374,10 +432,12 @@ reproducible route from live AP queues to native downlink OFDMA scheduling.
 In six controlled ns-3 cases, the throughput policy closely tracks its
 oracle and improves overloaded throughput over default RR. The age-weighted
 model's failures, unequal baseline capabilities, and conditional delay
-statistics constrain the interpretation. Host timing identifies legal
-projection as a major cost. Longer runs, matched mixed-RU heuristics,
-heterogeneous time-varying channels, and interference experiments remain
-necessary to assess robustness. The accompanying source artifact provides
+statistics constrain the interpretation. Host timing shows that the learned network already operates at
+microsecond scale and identifies legal projection, rather than inference, as
+the main remaining compute cost. This makes deployment on stronger AP CPUs or
+embedded ML accelerators technically plausible. Longer runs, matched mixed-RU
+heuristics, heterogeneous time-varying channels, and interference experiments
+remain necessary to assess robustness. The accompanying source artifact provides
 the simulator snapshot, data, models, and commands for regenerating every
 reported table and figure.
 

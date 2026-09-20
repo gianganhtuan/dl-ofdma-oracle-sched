@@ -91,7 +91,7 @@ def generate(directory, output, plots=True):
                      for p in ["rr_default", "ml_throughput"]]
            for s, name in zip(SCENARIOS, NAMES)], "lrrrr")
     table(output / "scenarios.tex", "Native evaluation scenarios; all datagrams are 1,000 bytes",
-          "tab:scenarios", ["Scenario", "$N$", "MCS", "$b$", "$\eta$", "Total Mbps"],
+          "tab:scenarios", ["Scenario", "$N$", "MCS", "$b$", r"$\eta$", "Total Mbps"],
           [[name, indexed[s,"rr_default",0]["stations"], indexed[s,"rr_default",0]["mcs"],
             b, indexed[s,"rr_default",0]["load_skew"],
             f"{float(indexed[s,'rr_default',0]['offered_mbps']):.1f}"]
@@ -99,7 +99,7 @@ def generate(directory, output, plots=True):
           "lrrrrr")
     components = [("State/features", "state"), ("Inference", "inference"),
                   ("Projection", "projection"), ("Decision hook", "decision")]
-    table(output / "timing.tex", "Serial host timing: means across 18 runs ($\mu$s)",
+    table(output / "timing.tex", r"Serial host timing: means across 18 runs ($\mu$s)",
           "tab:timing", ["Component", "Mean", "Mean of run p99s"],
           [[name, f"{latency['summary'][key + '_mean_us']:.1f}",
             f"{latency['summary'][key + '_p99_us']:.1f}"] for name, key in components], "lrr")
@@ -186,7 +186,7 @@ def generate(directory, output, plots=True):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results", type=Path, default=ROOT / "results/native_10seed")
-    parser.add_argument("--output", type=Path, default=ROOT.parent / "tex/generated")
+    parser.add_argument("--output", type=Path, default=ROOT.parent / "tex")
     parser.add_argument("--no-plots", action="store_true")
     args = parser.parse_args()
     audit = generate(args.results, args.output, not args.no_plots)
