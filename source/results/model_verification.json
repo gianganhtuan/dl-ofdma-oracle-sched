@@ -1,0 +1,42 @@
+[
+  {
+    "objective": "throughput",
+    "rows": 11297,
+    "trajectories": 24,
+    "validation_rows": 1030,
+    "source_feature_counts": [
+      135
+    ],
+    "validation_metrics": {
+      "loss": 1.1522955894470215,
+      "per_sta_accuracy": 0.7239482200647249,
+      "active_sta_accuracy": 0.6222320637732507,
+      "raw_exact_action_accuracy": 0.1145631067961165,
+      "selected_precision": 0.38900785153461814,
+      "selected_recall": 0.7450444292549556,
+      "selected_f1": 0.5111371629542789
+    },
+    "binary_matches_export": true,
+    "binary_sha256": "6c96c02c814bf0947aa3859f4c1bf31630ac490fffa71fd53a3431611e195680"
+  },
+  {
+    "objective": "delay",
+    "rows": 11149,
+    "trajectories": 24,
+    "validation_rows": 1038,
+    "source_feature_counts": [
+      135
+    ],
+    "validation_metrics": {
+      "loss": 2.280941569805145,
+      "per_sta_accuracy": 0.7888032541211732,
+      "active_sta_accuracy": 0.7161967779056386,
+      "raw_exact_action_accuracy": 0.3439306358381503,
+      "selected_precision": 0.6186069167072576,
+      "selected_recall": 0.7303047728579644,
+      "selected_f1": 0.669831223628692
+    },
+    "binary_matches_export": true,
+    "binary_sha256": "f4f634083873bfe00ff2648384b62f79497616406d9f3b92a5cd29ade19e9312"
+  }
+]

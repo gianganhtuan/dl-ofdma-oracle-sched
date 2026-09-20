@@ -1,0 +1,767 @@
+diff --git a/scratch/.gitignore b/scratch/.gitignore
+index 64892bf..043a868 100644
+--- a/scratch/.gitignore
++++ b/scratch/.gitignore
+@@ -5,4 +5,5 @@
+ !nested-subdir/
+ !subdir/
+ !scratch-simulator.cc
++!q1-ofdma-validation.cc
+ !CMakeLists.txt
+diff --git a/src/wifi/CMakeLists.txt b/src/wifi/CMakeLists.txt
+index b262b2f..f43d662 100644
+--- a/src/wifi/CMakeLists.txt
++++ b/src/wifi/CMakeLists.txt
+@@ -88,6 +88,8 @@ set(source_files
+     model/he/mu-snr-tag.cc
+     model/he/multi-user-scheduler.cc
+     model/he/obss-pd-algorithm.cc
++    model/he/q1-policy-model.cc
++    model/he/q1-ru-optimizer.cc
+     model/he/rr-multi-user-scheduler.cc
+     model/ht/ht-capabilities.cc
+     model/ht/ht-configuration.cc
+@@ -267,6 +269,8 @@ set(header_files
+     model/he/mu-snr-tag.h
+     model/he/multi-user-scheduler.h
+     model/he/obss-pd-algorithm.h
++    model/he/q1-policy-model.h
++    model/he/q1-ru-optimizer.h
+     model/he/rr-multi-user-scheduler.h
+     model/ht/ht-capabilities.h
+     model/ht/ht-configuration.h
+@@ -400,6 +404,7 @@ build_lib(
+     ${gsl_libraries}
+   TEST_SOURCES
+     test/block-ack-test-suite.cc
++    test/q1-ru-optimizer-test.cc
+     test/channel-access-manager-test.cc
+     test/inter-bss-test-suite.cc
+     test/power-rate-adaptation-test.cc
+diff --git a/src/wifi/model/he/he-ppdu.cc b/src/wifi/model/he/he-ppdu.cc
+index 14b0a58..1cd0ce9 100644
+--- a/src/wifi/model/he/he-ppdu.cc
++++ b/src/wifi/model/he/he-ppdu.cc
+@@ -665,6 +665,30 @@ HePpdu::GetHeSigBContentChannels(const WifiTxVector& txVector, uint8_t p20Index)
+     HeSigBContentChannels contentChannels{{}};
+ 
+     const auto channelWidth = txVector.GetChannelWidth();
++    if (channelWidth == MHz_u{20} &&
++        txVector.GetModulationClass() == WIFI_MOD_CLASS_HE && !txVector.IsSigBCompression())
++    {
++        const auto& ruAllocation = txVector.GetRuAllocation(p20Index);
++        NS_ASSERT(ruAllocation.size() == 1);
++        const auto& userInfoMap = txVector.GetHeMuUserInfoMap();
++        for (const auto& ru : HeRu::GetRuSpecs(ruAllocation.front()))
++        {
++            const auto user = std::find_if(userInfoMap.begin(), userInfoMap.end(), [&](auto entry) {
++                return WifiRu::IsHe(entry.second.ru) &&
++                       std::get<HeRu::RuSpec>(entry.second.ru) == ru;
++            });
++            if (user == userInfoMap.end())
++            {
++                contentChannels.front().push_back({NO_USER_STA_ID, 0, 0});
++            }
++            else
++            {
++                contentChannels.front().push_back(
++                    {user->first, user->second.nss, user->second.mcs});
++            }
++        }
++        return contentChannels;
++    }
+     if (channelWidth > MHz_u{20})
+     {
+         contentChannels.emplace_back();
+diff --git a/src/wifi/model/he/rr-multi-user-scheduler.cc b/src/wifi/model/he/rr-multi-user-scheduler.cc
+index a36536c..06c1350 100644
+--- a/src/wifi/model/he/rr-multi-user-scheduler.cc
++++ b/src/wifi/model/he/rr-multi-user-scheduler.cc
+@@ -12,13 +12,21 @@
+ #include "he-phy.h"
+ 
+ #include "ns3/eht-frame-exchange-manager.h"
++#include "ns3/double.h"
+ #include "ns3/log.h"
++#include "ns3/simulator.h"
++#include "ns3/string.h"
+ #include "ns3/wifi-acknowledgment.h"
+ #include "ns3/wifi-mac-queue.h"
+ #include "ns3/wifi-protection.h"
+ #include "ns3/wifi-psdu.h"
+ 
+ #include <algorithm>
++#include <array>
++#include <chrono>
++#include <cmath>
++#include <iomanip>
++#include <map>
+ #include <numeric>
+ 
+ namespace ns3
+@@ -83,7 +91,43 @@ RrMultiUserScheduler::GetTypeId()
+                 "duration (in microseconds) times the allocated bandwidth share",
+                 TimeValue(Seconds(1)),
+                 MakeTimeAccessor(&RrMultiUserScheduler::m_maxCredits),
+-                MakeTimeChecker());
++                MakeTimeChecker())
++            .AddAttribute("DlSelectionPolicy",
++                          "DL station-selection policy: 0 credit RR, 1 max backlog, "
++                          "2 exact 20 MHz RU oracle, 3 constrained RU-imitation model.",
++                          UintegerValue(0),
++                          MakeUintegerAccessor(&RrMultiUserScheduler::m_dlSelectionPolicy),
++                          MakeUintegerChecker<uint8_t>(0, 3))
++            .AddAttribute("ModelPath",
++                          "Binary set-network model used by DlSelectionPolicy=3.",
++                          StringValue(""),
++                          MakeStringAccessor(&RrMultiUserScheduler::m_modelPath),
++                          MakeStringChecker())
++            .AddAttribute("OracleDelayWeight",
++                          "Weight of normalized packet age. Zero is throughput-only.",
++                          DoubleValue(0.0),
++                          MakeDoubleAccessor(&RrMultiUserScheduler::m_oracleDelayWeight),
++                          MakeDoubleChecker<double>(0.0))
++            .AddAttribute("OracleDelayScale",
++                          "Packet-age normalization used by the joint objective.",
++                          TimeValue(MilliSeconds(100)),
++                          MakeTimeAccessor(&RrMultiUserScheduler::m_oracleDelayScale),
++                          MakeTimeChecker(MicroSeconds(1)))
++            .AddAttribute("OracleExchangeOverhead",
++                          "Fixed contention and control overhead in the oracle objective.",
++                          TimeValue(MicroSeconds(100)),
++                          MakeTimeAccessor(&RrMultiUserScheduler::m_oracleExchangeOverhead),
++                          MakeTimeChecker(Time{0}))
++            .AddAttribute("TrainingOutput",
++                          "Optional JSONL path for exact live queue-state/oracle labels.",
++                          StringValue(""),
++                          MakeStringAccessor(&RrMultiUserScheduler::m_trainingOutput),
++                          MakeStringChecker())
++            .AddAttribute("TrainingSampleStride",
++                          "Write one training sample every this many oracle opportunities.",
++                          UintegerValue(1),
++                          MakeUintegerAccessor(&RrMultiUserScheduler::m_trainingSampleStride),
++                          MakeUintegerChecker<uint32_t>(1));
+     return tid;
+ }
+ 
+@@ -112,6 +156,13 @@ RrMultiUserScheduler::DoInitialize()
+     {
+         m_staListDl.insert({ac.first, {}});
+     }
++    NS_ABORT_MSG_IF(m_dlSelectionPolicy == 3 && !m_policyModel.Load(m_modelPath),
++                    "Unable to load Q1 policy model from " << m_modelPath);
++    if (!m_trainingOutput.empty())
++    {
++        m_trainingStream.open(m_trainingOutput, std::ios::out | std::ios::trunc);
++        NS_ABORT_MSG_IF(!m_trainingStream, "Unable to open training output " << m_trainingOutput);
++    }
+     MultiUserScheduler::DoInitialize();
+ }
+ 
+@@ -122,7 +173,12 @@ RrMultiUserScheduler::DoDispose()
+     m_staListDl.clear();
+     m_staListUl.clear();
+     m_candidates.clear();
++    m_selectedRus.clear();
+     m_txParams.Clear();
++    if (m_trainingStream.is_open())
++    {
++        m_trainingStream.close();
++    }
+     m_apMac->TraceDisconnectWithoutContext(
+         "AssociatedSta",
+         MakeCallback(&RrMultiUserScheduler::NotifyStationAssociated, this));
+@@ -738,6 +794,266 @@ RrMultiUserScheduler::NotifyStationDeassociated(uint16_t aid, Mac48Address addre
+     m_staListUl.remove_if([&aid](const MasterInfo& info) { return info.aid == aid; });
+ }
+ 
++std::size_t
++RrMultiUserScheduler::ApplyDlSelectionPolicy(AcIndex primaryAc,
++                                             const std::vector<uint8_t>& tids)
++{
++    auto& stationList = m_staListDl[primaryAc];
++    m_selectedRus.clear();
++    m_hasRuAction = false;
++    if (m_dlSelectionPolicy == 0 || stationList.empty())
++    {
++        return m_nStations;
++    }
++    const auto decisionStart = std::chrono::steady_clock::now();
++
++    std::vector<Q1RuStationState> states;
++    states.reserve(std::min<std::size_t>(9, stationList.size()));
++    for (const auto& station : stationList)
++    {
++        if (states.size() == 9)
++        {
++            break;
++        }
++        Q1RuStationState state;
++        state.aid = station.aid;
++        Ptr<WifiMpdu> firstMpdu;
++        for (uint8_t tid : tids)
++        {
++            auto qosTxop = m_apMac->GetQosTxop(QosUtilsMapTidToAc(tid));
++            auto queue = qosTxop->GetWifiMacQueue();
++            const auto queueId = MakeWifiUnicastQueueId(WIFI_QOSDATA_QUEUE, station.address, tid);
++            state.queuePackets += queue->GetNPackets(queueId);
++            state.queueBytes += queue->GetNBytes(queueId);
++            if (firstMpdu || !m_apMac->GetBaAgreementEstablishedAsOriginator(station.address, tid))
++            {
++                continue;
++            }
++            auto item = qosTxop->PeekNextMpdu(m_linkId, tid, station.address);
++            if (item)
++            {
++                state.maxAmpduBytes = GetHeFem(m_linkId)->GetMpduAggregator()->GetMaxAmpduSize(
++                    station.address, tid, WIFI_MOD_CLASS_HE);
++            }
++            const auto prefixLimit = std::min<std::size_t>(
++                m_dlSelectionPolicy == 2 ? Q1RuOptimizer::MAX_PREFIX
++                                         : Q1RuOptimizer::MODEL_PREFIX,
++                qosTxop->GetBaBufferSize(station.address, tid));
++            while (item && state.queue.size() < prefixLimit)
++            {
++                if (!firstMpdu)
++                {
++                    firstMpdu = item;
++                }
++                state.queue.push_back({item->GetPacket()->GetSize(),
++                                       item->GetSize(),
++                                       std::max(0.0,
++                                                (Simulator::Now() - item->GetTimestamp())
++                                                    .ToDouble(Time::MS))});
++                item = qosTxop->PeekNextMpdu(m_linkId, tid, station.address, item);
++            }
++        }
++        if (firstMpdu)
++        {
++            auto txVector =
++                GetWifiRemoteStationManager(m_linkId)->GetDataTxVector(firstMpdu->GetHeader(),
++                                                                        m_allowedWidth);
++            state.mcs = std::min<uint8_t>(11, txVector.GetMode().GetMcsValue());
++            state.nss = txVector.GetNss();
++        }
++        states.push_back(std::move(state));
++    }
++
++    std::map<uint16_t, double> scores;
++    if (m_dlSelectionPolicy == 1)
++    {
++        for (const auto& state : states)
++        {
++            scores[state.aid] = state.queueBytes;
++        }
++        stationList.sort([&scores](const MasterInfo& lhs, const MasterInfo& rhs) {
++            const auto lhsScore = scores.contains(lhs.aid) ? scores.at(lhs.aid) : 0.0;
++            const auto rhsScore = scores.contains(rhs.aid) ? scores.at(rhs.aid) : 0.0;
++            return lhsScore > rhsScore;
++        });
++        m_decisionLatenciesUs.push_back(
++            std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() -
++                                                       decisionStart)
++                .count());
++        return m_nStations;
++    }
++
++    NS_ABORT_MSG_IF(m_allowedWidth != MHz_u{20},
++                    "Q1 RU policies currently require a 20 MHz channel");
++    Ptr<HeConfiguration> heConfiguration = m_apMac->GetHeConfiguration();
++    NS_ASSERT(heConfiguration);
++    WifiTxVector txVector;
++    txVector.SetPreambleType(WIFI_PREAMBLE_HE_MU);
++    txVector.SetChannelWidth(m_allowedWidth);
++    txVector.SetGuardInterval(heConfiguration->GetGuardInterval());
++    txVector.SetBssColor(heConfiguration->m_bssColor);
++
++    const auto features = Q1RuOptimizer::BuildFeatures(states, heConfiguration->GetGuardInterval());
++    m_stateLatenciesUs.push_back(
++        std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - decisionStart)
++            .count());
++    Q1RuAction action;
++    if (m_dlSelectionPolicy == 2)
++    {
++        action = Q1RuOptimizer::Optimize(states,
++                                         txVector,
++                                         m_apMac->GetWifiPhy(m_linkId)->GetPhyBand(),
++                                         std::min<std::size_t>(m_nStations, 9),
++                                         GetPpduMaxTime(WIFI_PREAMBLE_HE_MU),
++                                         m_oracleExchangeOverhead,
++                                         m_oracleDelayWeight,
++                                         m_oracleDelayScale);
++        WriteTrainingSample(features, states, action);
++    }
++    else
++    {
++        const auto inferenceStart = std::chrono::steady_clock::now();
++        const auto logits = m_policyModel.PredictRuLogits(features);
++        m_inferenceLatenciesUs.push_back(
++            std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() -
++                                                       inferenceStart)
++                .count());
++        NS_ABORT_MSG_IF(logits.size() != Q1RuOptimizer::N_STATIONS *
++                                             Q1RuOptimizer::N_RU_CLASSES,
++                        "Q1 RU policy inference failed");
++        const auto projectionStart = std::chrono::steady_clock::now();
++        action = Q1RuOptimizer::Decode(states, logits, std::min<std::size_t>(m_nStations, 9));
++        m_projectionLatenciesUs.push_back(
++            std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() -
++                                                       projectionStart)
++                .count());
++        if (action.assignments.empty())
++        {
++            ++m_learnedFallbackCount;
++        }
++    }
++
++    for (std::size_t order = 0; order < action.assignments.size(); ++order)
++    {
++        const auto& assignment = action.assignments[order];
++        const auto aid = states.at(assignment.stationIndex).aid;
++        m_selectedRus.emplace(aid, assignment.ru);
++        scores[aid] = static_cast<double>(action.assignments.size() - order);
++    }
++    m_selectedRuAllocation = action.ruAllocation;
++    m_hasRuAction = !action.assignments.empty();
++    NS_LOG_INFO("Q1 RU action allocation=" << +m_selectedRuAllocation
++                                            << " users=" << action.assignments.size()
++                                            << " objective=" << action.objective);
++    for (const auto& assignment : action.assignments)
++    {
++        NS_LOG_INFO("  AID=" << states.at(assignment.stationIndex).aid
++                              << " RU=" << assignment.ru);
++    }
++    stationList.sort([&scores](const MasterInfo& lhs, const MasterInfo& rhs) {
++        const auto lhsScore = scores.contains(lhs.aid) ? scores.at(lhs.aid) : 0.0;
++        const auto rhsScore = scores.contains(rhs.aid) ? scores.at(rhs.aid) : 0.0;
++        return lhsScore > rhsScore;
++    });
++    m_decisionLatenciesUs.push_back(
++        std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - decisionStart)
++            .count());
++    return std::max<std::size_t>(1, action.assignments.size());
++}
++
++void
++RrMultiUserScheduler::WriteTrainingSample(const std::vector<float>& features,
++                                          const std::vector<Q1RuStationState>& states,
++                                          const Q1RuAction& action)
++{
++    if (!m_trainingStream || (m_trainingOpportunity++ % m_trainingSampleStride) != 0 ||
++        action.assignments.empty())
++    {
++        return;
++    }
++    std::vector<uint8_t> labels(Q1RuOptimizer::N_STATIONS, 0);
++    for (const auto& assignment : action.assignments)
++    {
++        labels.at(assignment.stationIndex) = Q1RuOptimizer::GetRuClass(assignment.ru.GetRuType());
++    }
++    m_trainingStream << std::setprecision(9) << "{\"schema\":\"q1-ns3-ru-v4\",\"time_s\":"
++                     << Simulator::Now().ToDouble(Time::S) << ",\"delay_weight\":"
++                     << m_oracleDelayWeight << ",\"delay_scale_ms\":"
++                     << m_oracleDelayScale.ToDouble(Time::MS) << ",\"horizon_us\":"
++                     << GetPpduMaxTime(WIFI_PREAMBLE_HE_MU).ToDouble(Time::US)
++                     << ",\"exchange_overhead_us\":"
++                     << m_oracleExchangeOverhead.ToDouble(Time::US)
++                     << ",\"objective\":" << action.objective
++                     << ",\"ppdu_us\":" << action.ppduDuration.ToDouble(Time::US)
++                     << ",\"allocation\":" << +action.ruAllocation << ",\"aids\":[";
++    for (std::size_t index = 0; index < Q1RuOptimizer::N_STATIONS; ++index)
++    {
++        if (index)
++        {
++            m_trainingStream << ',';
++        }
++        m_trainingStream << (index < states.size() ? states[index].aid : 0);
++    }
++    m_trainingStream << "],\"states\":[";
++    for (std::size_t station = 0; station < states.size(); ++station)
++    {
++        if (station)
++        {
++            m_trainingStream << ',';
++        }
++        const auto& state = states[station];
++        m_trainingStream << "{\"aid\":" << state.aid << ",\"mcs\":" << +state.mcs
++                         << ",\"nss\":" << +state.nss << ",\"queue_packets\":"
++                         << state.queuePackets << ",\"queue_bytes\":" << state.queueBytes
++                         << ",\"max_ampdu_bytes\":" << state.maxAmpduBytes
++                         << ",\"prefix\":[";
++        for (std::size_t packet = 0; packet < state.queue.size(); ++packet)
++        {
++            if (packet)
++            {
++                m_trainingStream << ',';
++            }
++            const auto& item = state.queue[packet];
++            m_trainingStream << "[" << item.payloadBytes << ',' << item.mpduBytes << ','
++                             << item.ageMs << ']';
++        }
++        m_trainingStream << "]}";
++    }
++    m_trainingStream << "],\"assignments\":[";
++    for (std::size_t index = 0; index < action.assignments.size(); ++index)
++    {
++        if (index)
++        {
++            m_trainingStream << ',';
++        }
++        const auto& assignment = action.assignments[index];
++        m_trainingStream << "{\"station\":" << assignment.stationIndex << ",\"ru_class\":"
++                         << +Q1RuOptimizer::GetRuClass(assignment.ru.GetRuType())
++                         << ",\"ru_index\":" << assignment.ru.GetIndex()
++                         << ",\"packets\":" << assignment.packetCount
++                         << ",\"payload_bytes\":" << assignment.payloadBytes << '}';
++    }
++    m_trainingStream << "],\"features\":[";
++    for (std::size_t index = 0; index < features.size(); ++index)
++    {
++        if (index)
++        {
++            m_trainingStream << ',';
++        }
++        m_trainingStream << features[index];
++    }
++    m_trainingStream << "],\"ru_classes\":[";
++    for (std::size_t index = 0; index < labels.size(); ++index)
++    {
++        if (index)
++        {
++            m_trainingStream << ',';
++        }
++        m_trainingStream << +labels[index];
++    }
++    m_trainingStream << "]}\n";
++}
++
+ MultiUserScheduler::TxFormat
+ RrMultiUserScheduler::TrySendingDlMuPpdu()
+ {
+@@ -751,10 +1067,6 @@ RrMultiUserScheduler::TrySendingDlMuPpdu()
+         return TxFormat::SU_TX;
+     }
+ 
+-    std::size_t count =
+-        std::min(static_cast<std::size_t>(m_nStations), m_staListDl[primaryAc].size());
+-    std::size_t nCentral26TonesRus{0};
+-
+     uint8_t currTid = wifiAcList.at(primaryAc).GetHighTid();
+ 
+     Ptr<WifiMpdu> mpdu = m_edca->PeekNextMpdu(m_linkId);
+@@ -790,6 +1102,11 @@ RrMultiUserScheduler::TrySendingDlMuPpdu()
+     m_txParams.m_txVector.SetGuardInterval(heConfiguration->GetGuardInterval());
+     m_txParams.m_txVector.SetBssColor(heConfiguration->m_bssColor);
+ 
++    const auto policyLimit = ApplyDlSelectionPolicy(primaryAc, tids);
++    std::size_t count = std::min(policyLimit, m_staListDl[primaryAc].size());
++    std::size_t nCentral26TonesRus{0};
++    const bool useRuAction = m_dlSelectionPolicy >= 2 && m_hasRuAction;
++
+     // The TXOP limit can be exceeded by the TXOP holder if it does not transmit more
+     // than one Data or Management frame in the TXOP and the frame is not in an A-MPDU
+     // consisting of more than one MPDU (Sec. 10.22.2.8 of 802.11-2016).
+@@ -820,6 +1137,12 @@ RrMultiUserScheduler::TrySendingDlMuPpdu()
+             continue;
+         }
+ 
++        if (useRuAction && !m_selectedRus.contains(staIt->aid))
++        {
++            ++staIt;
++            continue;
++        }
++
+         // check if the AP has at least one frame to be sent to the current station
+         for (uint8_t tid : tids)
+         {
+@@ -846,8 +1169,8 @@ RrMultiUserScheduler::TrySendingDlMuPpdu()
+ 
+                     WifiTxVector txVectorCopy = m_txParams.m_txVector;
+ 
+-                    // the first candidate STA determines the preamble type for the DL MU PPDU
+-                    if (m_candidates.empty())
++                    // The first candidate STA determines the preamble type for stock RR policies.
++                    if (!useRuAction && m_candidates.empty())
+                     {
+                         WifiModulationClass mc = WIFI_MOD_CLASS_HE;
+                         if (suTxVector.GetPreambleType() == WIFI_PREAMBLE_EHT_MU)
+@@ -868,18 +1191,31 @@ RrMultiUserScheduler::TrySendingDlMuPpdu()
+                         }
+                     }
+ 
+-                    NS_ASSERT(ruType != RuType::RU_TYPE_MAX);
+-                    const auto currRuType =
+-                        (m_candidates.size() < count ? ruType : RuType::RU_26_TONE);
+-                    const auto ru =
+-                        (m_txParams.m_txVector.GetPreambleType() == WIFI_PREAMBLE_EHT_MU)
+-                            ? WifiRu::RuSpec(EhtRu::RuSpec{currRuType, 1, true, true})
+-                            : WifiRu::RuSpec(HeRu::RuSpec{currRuType, 1, true});
++                    NS_ASSERT(useRuAction || ruType != RuType::RU_TYPE_MAX);
++                    const auto currRuType = useRuAction
++                                                ? m_selectedRus.at(staIt->aid).GetRuType()
++                                                : (m_candidates.size() < count
++                                                       ? ruType
++                                                       : RuType::RU_26_TONE);
++                    const auto tentativeIndex =
++                        m_allowedWidth == MHz_u{20} && currRuType == RuType::RU_26_TONE &&
++                                count > 8 && m_candidates.size() < count
++                            ? m_candidates.size() + 1
++                            : 1;
++                    const auto ru = useRuAction
++                                        ? WifiRu::RuSpec(m_selectedRus.at(staIt->aid))
++                                        : (m_txParams.m_txVector.GetPreambleType() ==
++                                                   WIFI_PREAMBLE_EHT_MU
++                                               ? WifiRu::RuSpec(EhtRu::RuSpec{
++                                                     currRuType, tentativeIndex, true, true})
++                                               : WifiRu::RuSpec(HeRu::RuSpec{
++                                                     currRuType, tentativeIndex, true}));
+                     m_txParams.m_txVector.SetHeMuUserInfo(
+                         staIt->aid,
+                         {ru, suTxVector.GetMode().GetMcsValue(), suTxVector.GetNss()});
+ 
+-                    if (!GetHeFem(m_linkId)->TryAddMpdu(mpdu, m_txParams, actualAvailableTime))
++                    if (!useRuAction &&
++                        !GetHeFem(m_linkId)->TryAddMpdu(mpdu, m_txParams, actualAvailableTime))
+                     {
+                         NS_LOG_DEBUG("Adding the peeked frame violates the time constraints");
+                         m_txParams.m_txVector = txVectorCopy;
+@@ -905,6 +1241,22 @@ RrMultiUserScheduler::TrySendingDlMuPpdu()
+         staIt++;
+     }
+ 
++    if (useRuAction && !m_candidates.empty())
++    {
++        m_txParams.m_txVector.SetRuAllocation({m_selectedRuAllocation}, 0);
++        for (const auto& candidate : m_candidates)
++        {
++            if (!GetHeFem(m_linkId)->TryAddMpdu(candidate.second,
++                                                m_txParams,
++                                                actualAvailableTime))
++            {
++                NS_LOG_DEBUG("The selected RU action violates frame-exchange constraints");
++                m_candidates.clear();
++                break;
++            }
++        }
++    }
++
+     if (m_candidates.empty())
+     {
+         if (m_forceDlOfdma)
+@@ -1033,7 +1385,10 @@ RrMultiUserScheduler::ComputeDlMuInfo()
+ 
+     DlMuInfo dlMuInfo;
+     std::swap(dlMuInfo.txParams.m_txVector, m_txParams.m_txVector);
+-    FinalizeTxVector(dlMuInfo.txParams.m_txVector);
++    if (!m_hasRuAction)
++    {
++        FinalizeTxVector(dlMuInfo.txParams.m_txVector);
++    }
+ 
+     m_txParams.Clear();
+     Ptr<WifiMpdu> mpdu;
+@@ -1124,4 +1479,34 @@ RrMultiUserScheduler::GetUlMuStas() const
+     return m_staListUl;
+ }
+ 
++const std::vector<double>&
++RrMultiUserScheduler::GetDecisionLatenciesUs() const
++{
++    return m_decisionLatenciesUs;
++}
++
++const std::vector<double>&
++RrMultiUserScheduler::GetInferenceLatenciesUs() const
++{
++    return m_inferenceLatenciesUs;
++}
++
++const std::vector<double>&
++RrMultiUserScheduler::GetStateLatenciesUs() const
++{
++    return m_stateLatenciesUs;
++}
++
++const std::vector<double>&
++RrMultiUserScheduler::GetProjectionLatenciesUs() const
++{
++    return m_projectionLatenciesUs;
++}
++
++uint64_t
++RrMultiUserScheduler::GetLearnedFallbackCount() const
++{
++    return m_learnedFallbackCount;
++}
++
+ } // namespace ns3
+diff --git a/src/wifi/model/he/rr-multi-user-scheduler.h b/src/wifi/model/he/rr-multi-user-scheduler.h
+index 022f9ef..8b682f4 100644
+--- a/src/wifi/model/he/rr-multi-user-scheduler.h
++++ b/src/wifi/model/he/rr-multi-user-scheduler.h
+@@ -10,9 +10,15 @@
+ #define RR_MULTI_USER_SCHEDULER_H
+ 
+ #include "multi-user-scheduler.h"
++#include "q1-policy-model.h"
++#include "q1-ru-optimizer.h"
+ 
++#include <fstream>
+ #include <functional>
+ #include <list>
++#include <map>
++#include <string>
++#include <vector>
+ 
+ namespace ns3
+ {
+@@ -61,6 +67,21 @@ class RrMultiUserScheduler : public MultiUserScheduler
+      */
+     virtual const std::list<MasterInfo>& GetUlMuStas() const;
+ 
++    /** @return end-to-end scheduling decision times in microseconds */
++    const std::vector<double>& GetDecisionLatenciesUs() const;
++
++    /** @return model-only inference times in microseconds */
++    const std::vector<double>& GetInferenceLatenciesUs() const;
++
++    /** @return queue-state extraction and feature construction times in microseconds */
++    const std::vector<double>& GetStateLatenciesUs() const;
++
++    /** @return learned legal-action projection times in microseconds */
++    const std::vector<double>& GetProjectionLatenciesUs() const;
++
++    /** @return learned decisions that produced no feasible RU action */
++    uint64_t GetLearnedFallbackCount() const;
++
+   protected:
+     void DoDispose() override;
+     void DoInitialize() override;
+@@ -170,6 +191,26 @@ class RrMultiUserScheduler : public MultiUserScheduler
+                        Time txDuration,
+                        const WifiTxVector& txVector);
+ 
++    /**
++     * Reorder DL stations according to the configured research policy.
++     *
++     * @param primaryAc the access category that gained access
++     * @param tids candidate TIDs in priority order
++     * @return maximum number of candidates requested by the policy
++     */
++    std::size_t ApplyDlSelectionPolicy(AcIndex primaryAc, const std::vector<uint8_t>& tids);
++
++    /**
++     * Write one exact queue-state/action pair when data collection is enabled.
++     *
++     * @param features normalized model features
++     * @param states live AP queue state
++     * @param action objective-maximizing action
++     */
++    void WriteTrainingSample(const std::vector<float>& features,
++                             const std::vector<Q1RuStationState>& states,
++                             const Q1RuAction& action);
++
+     /**
+      * Information stored for candidate stations
+      */
+@@ -187,6 +228,24 @@ class RrMultiUserScheduler : public MultiUserScheduler
+     std::list<MasterInfo> m_staListUl;     //!< List of stations to serve for UL
+     std::list<CandidateInfo> m_candidates; //!< Candidate stations for MU TX
+     Time m_maxCredits;                     //!< Max amount of credits a station can have
++    uint8_t m_dlSelectionPolicy{0}; //!< 0 RR, 1 max backlog, 2 RU oracle, 3 learned RU
++    std::string m_modelPath;        //!< binary oracle-imitation model path
++    double m_oracleDelayWeight{0.0}; //!< weight of age in the oracle objective
++    Time m_oracleDelayScale{MilliSeconds(100)}; //!< packet-age normalization
++    Time m_oracleExchangeOverhead{MicroSeconds(100)}; //!< fixed objective overhead
++    std::string m_trainingOutput; //!< JSONL output for exact oracle labels
++    uint32_t m_trainingSampleStride{1}; //!< write one out of this many opportunities
++    uint64_t m_trainingOpportunity{0}; //!< observed oracle opportunities
++    std::ofstream m_trainingStream; //!< training data stream
++    Q1PolicyModel m_policyModel; //!< lightweight set-network runtime
++    std::map<uint16_t, HeRu::RuSpec> m_selectedRus; //!< current full RU action
++    uint8_t m_selectedRuAllocation{192}; //!< current standard partition code
++    bool m_hasRuAction{false}; //!< whether the current candidates use a full RU action
++    std::vector<double> m_decisionLatenciesUs; //!< state-to-action wall-clock times
++    std::vector<double> m_inferenceLatenciesUs; //!< model-only wall-clock times
++    std::vector<double> m_stateLatenciesUs; //!< queue-state and feature construction times
++    std::vector<double> m_projectionLatenciesUs; //!< learned legal-action projection times
++    uint64_t m_learnedFallbackCount{0}; //!< empty learned actions that fall back to stock logic
+     CtrlTriggerHeader m_trigger;           //!< Trigger Frame to send
+     WifiMacHeader m_triggerMacHdr;         //!< MAC header for Trigger Frame
+     Time m_triggerTxDuration{0};           //!< Trigger Frame TX duration
+diff --git a/src/wifi/model/wifi-tx-vector.cc b/src/wifi/model/wifi-tx-vector.cc
+index af906ec..c471165 100644
+--- a/src/wifi/model/wifi-tx-vector.cc
++++ b/src/wifi/model/wifi-tx-vector.cc
+@@ -412,7 +412,24 @@ WifiTxVector::SetRuAllocation(const RuAllocation& ruAlloc, uint8_t p20Index)
+ {
+     if (ns3::IsDlMu(m_preamble) && !m_muUserInfos.empty())
+     {
+-        NS_ASSERT(ruAlloc == DeriveRuAllocation(p20Index));
++        if (GetModulationClass() == WIFI_MOD_CLASS_HE && m_channelWidth == MHz_u{20} &&
++            ruAlloc.size() == 1)
++        {
++            const auto legalRus = HeRu::GetRuSpecs(ruAlloc.front());
++            for (const auto& [staId, userInfo] : m_muUserInfos)
++            {
++                (void)staId;
++                NS_ASSERT(WifiRu::IsHe(userInfo.ru));
++                const auto assigned = std::get<HeRu::RuSpec>(userInfo.ru);
++                NS_ASSERT_MSG(std::find(legalRus.begin(), legalRus.end(), assigned) !=
++                                  legalRus.end(),
++                              "Assigned RU is not part of the explicit 20 MHz HE allocation");
++            }
++        }
++        else
++        {
++            NS_ASSERT(ruAlloc == DeriveRuAllocation(p20Index));
++        }
+     }
+     m_ruAllocation = ruAlloc;
+ }
+@@ -804,6 +821,45 @@ RuAllocation
+ WifiTxVector::DeriveRuAllocation(uint8_t p20Index) const
+ {
+     const auto mc = GetModulationClass();
++    if (mc == WIFI_MOD_CLASS_HE && m_channelWidth == MHz_u{20})
++    {
++        std::vector<HeRu::RuSpec> assignedRus;
++        bool uniqueRus{true};
++        std::set<RuType> assignedTypes;
++        for (const auto& [staId, userInfo] : m_muUserInfos)
++        {
++            (void)staId;
++            if (WifiRu::IsHe(userInfo.ru))
++            {
++                const auto ru = std::get<HeRu::RuSpec>(userInfo.ru);
++                uniqueRus = uniqueRus &&
++                            std::find(assignedRus.begin(), assignedRus.end(), ru) ==
++                                assignedRus.end();
++                assignedRus.push_back(ru);
++                assignedTypes.insert(ru.GetRuType());
++            }
++        }
++        std::optional<std::pair<std::size_t, uint8_t>> bestMatch;
++        for (const auto& [code, legalRus] : HeRu::m_heRuAllocations)
++        {
++            if (!uniqueRus || assignedTypes.size() < 2 || code > 192 ||
++                legalRus.size() < assignedRus.size())
++            {
++                continue;
++            }
++            const auto contained = std::all_of(assignedRus.begin(), assignedRus.end(), [&](auto ru) {
++                return std::find(legalRus.begin(), legalRus.end(), ru) != legalRus.end();
++            });
++            if (contained && (!bestMatch || legalRus.size() < bestMatch->first))
++            {
++                bestMatch = {legalRus.size(), code};
++            }
++        }
++        if (bestMatch)
++        {
++            return RuAllocation{bestMatch->second};
++        }
++    }
+     const auto emptyRu =
+         (mc == WIFI_MOD_CLASS_HE) ? EMPTY_242_TONE_HE_RU : UNASSIGNED_242_TONE_EHT_RU;
+     RuAllocation ruAllocations(Count20MHzSubchannels(m_channelWidth), emptyRu);

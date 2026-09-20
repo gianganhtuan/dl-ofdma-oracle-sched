@@ -1,0 +1,81 @@
+{
+  "ns3_upstream_revision": "d2add90b452d600cfb4859baed8e9ea633519447",
+  "ns3_upstream_url": "https://gitlab.com/nsnam/ns-3-dev.git",
+  "ns3_version_file": "3.48",
+  "working_tree_included": true,
+  "changed_file_sha256": {
+    "scratch/.gitignore": "1ac626ab83d59f6952b9e5e7b4b02ebc5ece31a0a149cdd8c10d4cfb74d8a061",
+    "scratch/q1-ofdma-validation.cc": "ee0cb4c6be6cba607ac9efedd439a9575c51bb048f944caeaf1481832db8dbf9",
+    "src/wifi/CMakeLists.txt": "ac81989292c7ef9d65f7a79f9381c30674813587ec34bccb1cae9626944d34db",
+    "src/wifi/model/he/he-ppdu.cc": "6b3fec7d61416995b93f015cde97b346e966ad00eae01dfacd1b635d2ea604e0",
+    "src/wifi/model/he/q1-policy-model.cc": "8ad1506acf23c64dcf161265654682671fe1ac2ea4c22af510ae8221470da52f",
+    "src/wifi/model/he/q1-policy-model.h": "705d6776d6976f9596282198944b8d717f8fc49f7cb64429f50c021844461b5f",
+    "src/wifi/model/he/q1-ru-optimizer.cc": "7a6a8e6c85119ac64e5b48f85590ff466e640aaf38b602fea13c7e2e503a7fe7",
+    "src/wifi/model/he/q1-ru-optimizer.h": "092ecccf4d5af7b6aa5f7551efb6d4ad980aadd71fb00944dc3eb5c45a096e14",
+    "src/wifi/model/he/rr-multi-user-scheduler.cc": "89a16883d43e40b11dee6248aa1071102cf2f3ad4eeb870141254f7122aefe6a",
+    "src/wifi/model/he/rr-multi-user-scheduler.h": "0a20343fd592a5a649a99b9017dd6c238fa8cb77eaf28d5def0efb90b31bbb7b",
+    "src/wifi/model/wifi-tx-vector.cc": "51ac327408ede8b757e81d544aa20af0f4555e0c297cd0d5ff0a39a797fbacaa",
+    "src/wifi/test/q1-ru-optimizer-test.cc": "a16cd8a7eff1783c6ff07d2a5365592b4cb840d787024e2525d3d719dbf6cbfc"
+  },
+  "network_campaign": {
+    "policies": 6,
+    "scenarios": 6,
+    "runs_per_cell": 10,
+    "rng_seed": 20260914,
+    "rng_runs": [
+      920000,
+      920009
+    ],
+    "traffic_start_s": 1,
+    "warmup_s": 2,
+    "measurement_s": 1,
+    "drain_s": 0.1,
+    "timing_budget_us": 1000
+  },
+  "serial_campaign": {
+    "policies": [
+      "ml_throughput"
+    ],
+    "scenarios": 6,
+    "runs_per_cell": 3,
+    "rng_seed": 20260914,
+    "rng_runs": [
+      940000,
+      940002
+    ],
+    "timing_budget_us": 1500,
+    "measurement_s": 1,
+    "warmup_s": 2,
+    "aggregation": "unweighted mean of per-run statistics; maximum separately reported"
+  },
+  "build": {
+    "profile": "default",
+    "compiler": "GCC 14.2.0",
+    "cxx_standard": 23,
+    "flags": "-Os -g -DNDEBUG",
+    "ns3_assertions": true,
+    "ns3_logging": true
+  },
+  "training": {
+    "seed": 20260914,
+    "epochs": 40,
+    "batch_size": 256,
+    "threads": 4,
+    "hidden_size": 64,
+    "dropout": 0.05,
+    "learning_rate": 0.001,
+    "weight_decay": 0.0001,
+    "class_weight": "inverse square root of frequency, mean normalized",
+    "numpy": "2.4.3",
+    "torch": "2.5.1+cu121",
+    "device": "CPU"
+  },
+  "label_provenance_limit": "Original manifest records upstream revision but not a dirty-tree diff. Archived labels preserve the actual source features and actions. The packaged snapshot is the final native implementation, whose extractor uses 39 rather than the collection's 135 features. Training uses the first 39 columns of each row. Fresh collection is a separate experiment; archived-label retraining is the route to the reported models.",
+  "metric_caveats": [
+    "delivery_ratio in legacy CSV is clipped throughput/offered rate, not cohort delivery",
+    "per-run p99s are averaged, not pooled",
+    "wall-clock selection-hook cost excludes subsequent MAC construction",
+    "scheduler timing spans setup, warm-up, measurement, and drain",
+    "wall-clock computation does not advance simulation time"
+  ]
+}

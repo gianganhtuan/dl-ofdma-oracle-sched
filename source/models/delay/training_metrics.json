@@ -1,0 +1,37 @@
+{
+  "dataset": "/home/tuan/ofdma-sim/samples/ns3_ru_v4/delay/training_samples.jsonl",
+  "rows": 11149,
+  "training_rows": 10111,
+  "validation_rows": 1038,
+  "feature_count": 39,
+  "class_counts": [
+    19938,
+    7265,
+    6533,
+    7167,
+    4205
+  ],
+  "class_weights": [
+    0.6061346530914307,
+    1.0041348934173584,
+    1.0588966608047485,
+    1.010976791381836,
+    1.3198570013046265
+  ],
+  "split": "independent trajectories",
+  "validation_trajectories": [
+    "run_17",
+    "run_19",
+    "run_2",
+    "run_7"
+  ],
+  "metrics": {
+    "loss": 2.280941569805145,
+    "per_sta_accuracy": 0.7888032541211732,
+    "active_sta_accuracy": 0.7161967779056386,
+    "raw_exact_action_accuracy": 0.3439306358381503,
+    "selected_precision": 0.6186069167072576,
+    "selected_recall": 0.7303047728579644,
+    "selected_f1": 0.669831223628692
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "platform": "Linux-6.12.95+deb13-amd64-x86_64-with-glibc2.41",
+  "machine": "x86_64",
+  "cpu": "Intel(R) Xeon(R) Gold 5222 CPU @ 3.80GHz",
+  "logical_cpus": 16,
+  "python": "3.11.2",
+  "numpy": "2.4.3",
+  "torch": "2.5.1+cu121",
+  "compiler": "g++ (Debian 14.2.0-19) 14.2.0",
+  "ns3": "3.48",
+  "latexmk": "unavailable",
+  "pdflatex": "unavailable"
+}
