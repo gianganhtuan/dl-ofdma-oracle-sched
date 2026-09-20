@@ -19,7 +19,7 @@ downlink OFDMA decisions online. The implementation does not replace packet
 delivery with an analytical estimate: ns-3 performs the actual contention,
 aggregation, HE MU transmission, acknowledgment, and retry procedures.
 
-![Project Screenshot](image.png
+![Project Screenshot](image.png)
 
 ## What Is Included
 
