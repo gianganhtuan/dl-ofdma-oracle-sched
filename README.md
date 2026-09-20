@@ -173,13 +173,16 @@ enumerates every distinct feasible pair duration `tau`. It retains only
 station-RU pairs with `t_ir <= tau` and compatible MCS. A subset dynamic program
 then assigns physical RU slots.
 
-Let `D_j(S)` be the greatest utility after processing `j` slots and assigning
-exactly the STA subset `S`. With `D_0(empty) = 0`, the recurrence is
+Let `D_j(S)` be the greatest utility after processing `j` slots and assigning exactly the STA subset `S`. With `D_0(\emptyset) = 0`, the recurrence is
 
 $$
-D_{j+1}(S) = \max\left\{
+D_{j+1}(S) =
+\max\left\{
 D_j(S),
-\max_{i\in S}\left[D_j(S\setminus\{i\})+W_{i,r_{j+1}}\right]
+\max_{i\in S}
+\left[
+D_j(S\setminus\{i\}) + W_{i,r_{j+1}}
+\right]
 \right\}.
 $$
 
